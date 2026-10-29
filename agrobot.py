@@ -1,5 +1,6 @@
 """AgroBot - Búsqueda no informada e informada con interfaz gráfica (Tkinter)."""
 import heapq
+import math
 import os
 import time
 import tkinter as tk
@@ -183,19 +184,134 @@ def buscar(mundo, alg):
 ZOOM = 3                       # sprites de 16x16 -> 48x48 px por casilla
 CELDA = 16 * ZOOM
 MARGEN = 6                     # holgura alrededor del mapa para que no se recorten los bordes
-RUTA_SPRITES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprites")
+BASE = os.path.dirname(os.path.abspath(__file__))
+RUTA_SPRITES = os.path.join(BASE, "sprites")
+CARPETA_REPORTES = os.path.join(BASE, "reportes")
 NOMBRES_SPRITES = ["Agrobot", "AgrobotSostenidoPorAvioneta", "Avioneta", "Muro",
                    "Piso", "CultivoSeco", "CultivoFertilizado", "Fertilizante"]
+
+# Imagen de la pantalla de inicio (título "Agrobot" + sprite), dentro de la carpeta sprites.
+# Cambia el nombre si tu archivo se llama distinto.
+ARCHIVO_PORTADA = "Portada.png"
+PORTADA_ANCHO_MAX = 460        # si la imagen es más ancha, se reduce automáticamente
+
+BG = "#2b1d26"                 # color de fondo de la ventana
+FG = "#f2e9d8"                 # color del texto
+
+
+class Tooltip:
+    """Globo de ayuda que aparece al dejar el mouse sobre un widget."""
+
+    def __init__(self, widget, texto, retraso=400):
+        self.widget, self.texto, self.retraso = widget, texto, retraso
+        self.ventana, self.id = None, None
+        widget.bind("<Enter>", self._programar, add="+")
+        widget.bind("<Leave>", self._ocultar, add="+")
+        widget.bind("<ButtonPress>", self._ocultar, add="+")
+
+    def _programar(self, _=None):
+        self._cancelar()
+        self.id = self.widget.after(self.retraso, self._mostrar)
+
+    def _cancelar(self):
+        if self.id:
+            self.widget.after_cancel(self.id)
+            self.id = None
+
+    def _mostrar(self):
+        if self.ventana:
+            return
+        x = min(self.widget.winfo_rootx() + 10, self.widget.winfo_screenwidth() - 290)
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.ventana = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(tw, text=self.texto, justify="left", bg="#fff8dc", fg="#222222",
+                 relief="solid", borderwidth=1, padx=6, pady=3, wraplength=260).pack()
+
+    def _ocultar(self, _=None):
+        self._cancelar()
+        if self.ventana:
+            self.ventana.destroy()
+            self.ventana = None
 
 
 class App:
     def __init__(self, root):
         self.root = root
         root.title("AgroBot")
-        self.mundo, self.camino, self.anim_id = None, None, None
+        root.configure(bg=BG)
 
-        barra = ttk.Frame(root, padding=6)
-        barra.pack(fill="x")
+        estilo = ttk.Style()
+        estilo.theme_use("clam")
+        estilo.configure("TFrame", background=BG)
+        estilo.configure("TLabel", background=BG, foreground=FG)
+        estilo.configure("TButton", padding=4)
+        estilo.configure("Grande.TButton", padding=(18, 8), font=("Arial", 14, "bold"))
+
+        self.mundo, self.camino, self.anim_id = None, None, None
+        self.ruta_mundo = ""
+        self.cargar_sprites()
+        self.construir_portada()
+        self.construir_juego()
+        self.mostrar_portada()
+
+    # ------------------------------------------------------ pantalla de inicio
+    def construir_portada(self):
+        self.portada = tk.Frame(self.root, bg=BG)
+        centro = tk.Frame(self.portada, bg=BG)
+        centro.place(relx=0.5, rely=0.5, anchor="center")     # todo centrado
+
+        if self.img_portada:
+            tk.Label(centro, image=self.img_portada, bg=BG, bd=0).pack(pady=(0, 24))
+        else:                                                  # respaldo si falta la imagen
+            tk.Label(centro, text="AgroBot", font=("Arial", 40, "bold"),
+                     bg=BG, fg=FG).pack(pady=(0, 10))
+            if self.img.get("Agrobot"):
+                tk.Label(centro, image=self.img["Agrobot"], bg=BG, bd=0).pack(pady=(0, 24))
+
+        ttk.Button(centro, text="Comenzar", style="Grande.TButton",
+                   command=self.cargar).pack()
+
+    def mostrar_portada(self):
+        self.juego.pack_forget()
+        self.portada.pack(fill="both", expand=True)
+        ancho = 10 * CELDA + 2 * MARGEN + 24
+        self.root.geometry(f"{ancho}x{ancho + 60}")
+        self.root.minsize(ancho, ancho + 60)
+        self.centrar_ventana()
+
+    def mostrar_juego(self):
+        self.portada.pack_forget()
+        self.juego.pack(fill="both", expand=True)
+        self.root.minsize(1, 1)
+        self.root.geometry("")                  # tamaño según el contenido
+        self.centrar_ventana()
+
+    def ajustar_ventana(self):
+        """Agranda la ventana (solo si hace falta) para que se vea todo el contenido."""
+        self.root.update_idletasks()
+        w = max(self.root.winfo_width(), self.root.winfo_reqwidth())
+        h = max(self.root.winfo_height(), self.root.winfo_reqheight())
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        y = max(0, min(y, self.root.winfo_screenheight() - h - 60))   # que no se salga de la pantalla
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def centrar_ventana(self):
+        """Ubica la ventana en el centro de la pantalla."""
+        self.root.update_idletasks()
+        w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        if self.root.winfo_width() > 1:
+            w, h = max(w, self.root.winfo_width()), max(h, self.root.winfo_height())
+        x = (self.root.winfo_screenwidth() - w) // 2
+        y = max(0, (self.root.winfo_screenheight() - h) // 2 - 30)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ----------------------------------------------------------- pantalla juego
+    def construir_juego(self):
+        self.juego = ttk.Frame(self.root)
+        barra = ttk.Frame(self.juego, padding=6)
+        barra.pack(fill="x", pady=(6, 18))        # espacio entre las opciones y el mundo
         ttk.Button(barra, text="Cargar mundo", command=self.cargar).pack(side="left")
         self.tipo = ttk.Combobox(barra, state="readonly", width=12,
                                  values=["No informada", "Informada"])
@@ -207,19 +323,27 @@ class App:
         self.actualizar_algs()
         ttk.Button(barra, text="Ejecutar", command=self.ejecutar).pack(side="left", padx=4)
         ttk.Button(barra, text="Reiniciar", command=self.reiniciar).pack(side="left")
-        ttk.Label(barra, text="Velocidad:").pack(side="left", padx=(10, 2))
-        self.vel = tk.Scale(barra, from_=50, to=800, orient="horizontal", length=90, showvalue=False)
+        lbl_vel = ttk.Label(barra, text="Velocidad:")
+        lbl_vel.pack(side="left", padx=(10, 2))
+        self.vel = tk.Scale(barra, from_=50, to=800, orient="horizontal", length=90,
+                            showvalue=False, bg=BG, fg=FG, highlightthickness=0,
+                            troughcolor="#45283c")
         self.vel.set(250)
         self.vel.pack(side="left")
+        ayuda = ("Entre más a la derecha esté la barra, más despacio anda el robot; "
+                 "entre más a la izquierda, más rápido.")
+        Tooltip(lbl_vel, ayuda)
+        Tooltip(self.vel, ayuda)
 
-        self.canvas = tk.Canvas(root, width=10 * CELDA + 2 * MARGEN, height=10 * CELDA + 2 * MARGEN,
+        self.canvas = tk.Canvas(self.juego, width=10 * CELDA + 2 * MARGEN,
+                                height=10 * CELDA + 2 * MARGEN,
                                 bg="#45283c", highlightthickness=0, bd=0)
-        self.canvas.pack(padx=6)
-        self.cargar_sprites()
-        self.estado_lbl = ttk.Label(root, text="Cargar Mundo.txt")
-        self.estado_lbl.pack(anchor="w", padx=6)
-        self.reporte = ttk.Label(root, text="", justify="left")
-        self.reporte.pack(anchor="w", padx=6, pady=6)
+        self.canvas.pack(padx=6, pady=(0, 18))    # espacio entre el mundo y el reporte
+        self.estado_lbl = ttk.Label(self.juego, text="")
+        self.estado_lbl.pack(anchor="w", padx=6, pady=(0, 8))
+        self.reporte = ttk.Label(self.juego, text="", justify="left",
+                                 wraplength=10 * CELDA + 2 * MARGEN - 12)
+        self.reporte.pack(anchor="w", padx=6, pady=(0, 10))
 
     def actualizar_algs(self, _=None):
         vals = (["Amplitud", "Costo uniforme", "Profundidad evitando ciclos"]
@@ -232,10 +356,13 @@ class App:
         if not ruta:
             return
         try:
-            self.mundo = Mundo.desde_archivo(ruta)
+            mundo = Mundo.desde_archivo(ruta)
         except Exception as ex:
             messagebox.showerror("Archivo inválido", str(ex))
             return
+        self.mundo, self.ruta_mundo = mundo, ruta
+        if self.portada.winfo_ismapped():       # primera carga: pasar de la portada al juego
+            self.mostrar_juego()
         self.reiniciar()
 
     def reiniciar(self):
@@ -256,6 +383,15 @@ class App:
                 self.img[nombre] = tk.PhotoImage(file=ruta).zoom(ZOOM)
             except tk.TclError:
                 self.img[nombre] = None
+
+        # Imagen de portada (se reduce si es demasiado ancha)
+        try:
+            portada = tk.PhotoImage(file=os.path.join(RUTA_SPRITES, ARCHIVO_PORTADA))
+            if portada.width() > PORTADA_ANCHO_MAX:
+                portada = portada.subsample(math.ceil(portada.width() / PORTADA_ANCHO_MAX))
+            self.img_portada = portada
+        except tk.TclError:
+            self.img_portada = None
 
     def _celda(self, x, y, nombre, color, txt=""):
         """Dibuja un sprite o, si no existe, un rectángulo de color."""
@@ -300,25 +436,66 @@ class App:
             text=f"Fertilizante: {e.fert}   Combustible avioneta: {e.comb if e.en_av else 0}   "
                  f"En avioneta: {'sí' if e.en_av else 'no'}   Costo acumulado: {g:.1f}")
 
+    # ----------------------------------------------------------------- REPORTE
+    def guardar_reporte(self, alg, res):
+        """Genera el reporte como archivo .txt en la carpeta 'reportes'. Devuelve la ruta."""
+        os.makedirs(CARPETA_REPORTES, exist_ok=True)
+        nombre = alg.replace("*", "Estrella").replace(" ", "_")
+        marca = time.strftime("%Y%m%d_%H%M%S")
+        ruta = os.path.join(CARPETA_REPORTES, f"reporte_{nombre}_{marca}.txt")
+
+        lineas = [
+            "AgroBot - Reporte de ejecución:",
+            "=" * 40,
+            f"Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Mundo: {os.path.basename(self.ruta_mundo)}",
+            f"Algoritmo: {alg}",
+            f"Nodos expandidos: {res['nodos']}",
+            f"Profundidad del árbol: {res['prof']}",
+            f"Tiempo de cómputo: {res['tiempo']:.4f} s",
+        ]
+        if res["camino"] is None:
+            lineas.append("Resultado: No se encontró la solución.")
+        else:
+            lineas.append(f"Pasos de la solución: {len(res['camino']) - 1}")
+            if alg in ("Costo uniforme", "A*"):
+                lineas.append(f"Costo de la solución: {res['costo']:.1f}")
+            recorrido = " -> ".join(f"({e.pos[0]},{e.pos[1]})" for e, _ in res["camino"])
+            lineas += ["", "Recorrido (fila,columna):", recorrido]
+
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write("\n".join(lineas) + "\n")
+        return ruta
+
     def ejecutar(self):
         if not self.mundo:
-            messagebox.showinfo("AgroBot", "Primero cargue un mundo.")
+            messagebox.showinfo("AgroBot", "Primero cargá un mundo rey.")
             return
         self.reiniciar()
         alg = self.alg.get()
         self.reporte.config(text=f"Ejecutando {alg}...")
         self.root.update_idletasks()
         res = buscar(self.mundo, alg)
+
         txt = (f"Algoritmo: {alg}\nNodos expandidos: {res['nodos']}\n"
                f"Profundidad del árbol: {res['prof']}\nTiempo de cómputo: {res['tiempo']:.4f} s")
         if res["camino"] is None:
             txt += "\nNo se encontró solución."
-            self.reporte.config(text=txt)
-            return
-        txt += f"\nPasos de la solución: {len(res['camino']) - 1}"
-        if alg in ("Costo uniforme", "A*"):
-            txt += f"\nCosto de la solución: {res['costo']:.1f}"
+        else:
+            txt += f"\nPasos de la solución: {len(res['camino']) - 1}"
+            if alg in ("Costo uniforme", "A*"):
+                txt += f"\nCosto de la solución: {res['costo']:.1f}"
+
+        try:
+            ruta = self.guardar_reporte(alg, res)
+            txt += f"\nReporte guardado en: {ruta}"
+        except OSError as ex:
+            txt += f"\nNo se pudo guardar el reporte: {ex}"
         self.reporte.config(text=txt)
+        self.ajustar_ventana()
+
+        if res["camino"] is None:
+            return
         self.camino, self.paso = res["camino"], 0
         self.animar()
 
@@ -334,5 +511,10 @@ class App:
 
 if __name__ == "__main__":
     raiz = tk.Tk()
+    try:
+        icono = tk.PhotoImage(file=os.path.join(RUTA_SPRITES, "Agrobot.png"))
+        raiz.iconphoto(True, icono)
+    except tk.TclError:
+        pass                                   # si no existe, queda el icono por defecto
     App(raiz)
     raiz.mainloop()
