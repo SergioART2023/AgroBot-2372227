@@ -1,5 +1,6 @@
 """AgroBot - Búsqueda no informada e informada con interfaz gráfica (Tkinter)."""
 import heapq
+import os
 import time
 import tkinter as tk
 from collections import deque, namedtuple
@@ -179,8 +180,12 @@ def buscar(mundo, alg):
 
 
 # --------------------------------------------------------------------- GUI
-CELDA = 54
-COLORES = {0: "white", 1: "#333333", 2: "white", 3: "#8B5A2B", 4: "#4A90D9", 5: "#F2C94C"}
+ZOOM = 3                       # sprites de 16x16 -> 48x48 px por casilla
+CELDA = 16 * ZOOM
+MARGEN = 6                     # holgura alrededor del mapa para que no se recorten los bordes
+RUTA_SPRITES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprites")
+NOMBRES_SPRITES = ["Agrobot", "AgrobotSostenidoPorAvioneta", "Avioneta", "Muro",
+                   "Piso", "CultivoSeco", "CultivoFertilizado", "Fertilizante"]
 
 
 class App:
@@ -207,9 +212,11 @@ class App:
         self.vel.set(250)
         self.vel.pack(side="left")
 
-        self.canvas = tk.Canvas(root, width=10 * CELDA, height=10 * CELDA, bg="white")
+        self.canvas = tk.Canvas(root, width=10 * CELDA + 2 * MARGEN, height=10 * CELDA + 2 * MARGEN,
+                                bg="#45283c", highlightthickness=0, bd=0)
         self.canvas.pack(padx=6)
-        self.estado_lbl = ttk.Label(root, text="Cargue un mundo para comenzar.")
+        self.cargar_sprites()
+        self.estado_lbl = ttk.Label(root, text="Cargar Mundo.txt")
         self.estado_lbl.pack(anchor="w", padx=6)
         self.reporte = ttk.Label(root, text="", justify="left")
         self.reporte.pack(anchor="w", padx=6, pady=6)
@@ -239,33 +246,56 @@ class App:
             self.reporte.config(text="")
             self.dibujar(self.mundo.inicial(), 0.0)
 
+    def cargar_sprites(self):
+        """Carga sprites/<Nombre>.png ampliados con zoom entero (se ven nítidos).
+        Si falta alguno, esa casilla se dibuja con colores como respaldo."""
+        self.img = {}
+        for nombre in NOMBRES_SPRITES:
+            ruta = os.path.join(RUTA_SPRITES, nombre + ".png")
+            try:
+                self.img[nombre] = tk.PhotoImage(file=ruta).zoom(ZOOM)
+            except tk.TclError:
+                self.img[nombre] = None
+
+    def _celda(self, x, y, nombre, color, txt=""):
+        """Dibuja un sprite o, si no existe, un rectángulo de color."""
+        if self.img.get(nombre):
+            self.canvas.create_image(x, y, image=self.img[nombre], anchor="nw")
+        else:
+            self.canvas.create_rectangle(x, y, x + CELDA, y + CELDA, fill=color, outline="#999")
+            if txt:
+                self.canvas.create_text(x + CELDA / 2, y + CELDA / 2, text=txt, fill="white",
+                                        font=("Arial", 14, "bold"))
+
     def dibujar(self, e, g):
         m, cv = self.mundo, self.canvas
         cv.delete("all")
         for r in range(m.filas):
             for c in range(m.cols):
-                v = m.grid[r][c]
-                color, txt = COLORES[v], ""
+                v, x, y = m.grid[r][c], MARGEN + c * CELDA, MARGEN + r * CELDA
+                if v == 1:
+                    self._celda(x, y, "Muro", "#333333")
+                    continue
+                self._celda(x, y, "Piso", "white")          # fondo de toda casilla libre
                 if v == 3:
-                    if (r, c) not in e.secos:
-                        color = "#4CAF50"          # cultivo tratado
-                    txt = "C"
+                    if (r, c) in e.secos:
+                        self._celda(x, y, "CultivoSeco", "#8B5A2B", "C")
+                    else:
+                        self._celda(x, y, "CultivoFertilizado", "#4CAF50", "C")
                 elif v == 4:
-                    txt = "D"
-                elif v == 5:
-                    txt = "A" if e.av_disp else ""
-                    if not e.av_disp:
-                        color = "white"
-                x, y = c * CELDA, r * CELDA
-                cv.create_rectangle(x, y, x + CELDA, y + CELDA, fill=color, outline="#999")
-                if txt:
-                    cv.create_text(x + CELDA / 2, y + CELDA / 2, text=txt, fill="white",
-                                   font=("Arial", 16, "bold"))
-        r, c = e.pos
-        x, y = c * CELDA, r * CELDA
-        cv.create_oval(x + 8, y + 8, x + CELDA - 8, y + CELDA - 8,
-                       fill="#FF8C00" if e.en_av else "#D32F2F", outline="black", width=2)
-        cv.create_text(x + CELDA / 2, y + CELDA / 2, text="R", fill="white", font=("Arial", 14, "bold"))
+                    self._celda(x, y, "Fertilizante", "#4A90D9", "D")
+                elif v == 5 and e.av_disp:
+                    self._celda(x, y, "Avioneta", "#F2C94C", "A")
+        x, y = MARGEN + e.pos[1] * CELDA, MARGEN + e.pos[0] * CELDA
+        if e.en_av:
+            if self.img.get("AgrobotSostenidoPorAvioneta"):
+                self._celda(x, y, "AgrobotSostenidoPorAvioneta", "")
+            else:
+                cv.create_oval(x + 6, y + 6, x + CELDA - 6, y + CELDA - 6, fill="#FF8C00", outline="black", width=2)
+        elif self.img.get("Agrobot"):
+            self._celda(x, y, "Agrobot", "")
+        else:
+            cv.create_oval(x + 6, y + 6, x + CELDA - 6, y + CELDA - 6, fill="#D32F2F", outline="black", width=2)
         self.estado_lbl.config(
             text=f"Fertilizante: {e.fert}   Combustible avioneta: {e.comb if e.en_av else 0}   "
                  f"En avioneta: {'sí' if e.en_av else 'no'}   Costo acumulado: {g:.1f}")
